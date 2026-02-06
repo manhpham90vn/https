@@ -1,4 +1,4 @@
-# HTTPS Reverse Proxy
+# HTTPS Reverse Proxy - [Docker Hub](https://hub.docker.com/r/manhpv151090/https)
 
 ![Docker Image Size (tag)](https://img.shields.io/docker/image-size/manhpv151090/https/latest)
 ![Docker Pulls](https://img.shields.io/docker/pulls/manhpv151090/https)
@@ -31,7 +31,7 @@ A lightweight, high-performance HTTPS reverse proxy written in Rust. Designed fo
 - ✅ **Auto TLS**: Automatically generates self-signed certificates using `rustls` on startup.
 - ✅ **Zero Config**: Works out-of-the-box with Docker Compose.
 - ✅ **Streaming**: Non-buffering body forwarding for high performance.
-- ✅ **Tiny Footprint**: Alpine-based Docker image (~25MB).
+- ✅ **Tiny Footprint**: Alpine-based Docker image (~7MB).
 
 ## 🛠 Prerequisites
 
