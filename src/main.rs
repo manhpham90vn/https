@@ -40,10 +40,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("  :{} -> {}", listener.port, listener.target);
     }
 
+    // Create insecure TLS config for upstream connections
+    // We create Two copies: one for hyper-rustls (it consumes it) and one for tungstenite (shared via Arc)
+    let https_client_config = https_proxy::tls::get_insecure_client_config();
+    let ws_client_config = Arc::new(https_proxy::tls::get_insecure_client_config());
+
     // Create HTTPS-capable client for proxying (supports both HTTP and HTTPS upstream)
     let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .expect("no native root CA certificates found")
+        .with_tls_config(https_client_config)
         .https_or_http()
         .enable_http1()
         .build();
@@ -64,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
     for listener_config in config.listeners {
         let rustls_config = rustls_config.clone();
         let http_client = http_client.clone();
+        let client_tls_config = ws_client_config.clone();
         let target = listener_config.target.clone();
         let port = listener_config.port;
 
@@ -74,10 +79,15 @@ async fn main() -> anyhow::Result<()> {
             let app = Router::new().fallback(any({
                 let target = target.clone();
                 let http_client = http_client.clone();
+                let client_tls_config = client_tls_config.clone();
                 move |connect_info, req| {
                     let target = target.clone();
                     let http_client = http_client.clone();
-                    async move { proxy_handler(connect_info, req, target, http_client).await }
+                    let client_tls_config = client_tls_config.clone();
+                    async move {
+                        proxy_handler(connect_info, req, target, http_client, client_tls_config)
+                            .await
+                    }
                 }
             }));
 

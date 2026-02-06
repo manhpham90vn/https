@@ -4,5 +4,6 @@
 
 pub mod config;
 pub mod proxy;
+pub mod tls;
 
 pub use proxy::proxy_handler;
