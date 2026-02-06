@@ -17,6 +17,10 @@ const DEFAULT_CONFIG_PATH: &str = "/etc/proxy/routes.yaml";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install default crypto provider (required for rustls 0.23+)
+    // Ignore error if already installed
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
@@ -36,8 +40,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("  :{} -> {}", listener.port, listener.target);
     }
 
-    // Create HTTP client for proxying (shared across all listeners)
-    let http_client = Arc::new(Client::builder(TokioExecutor::new()).build_http());
+    // Create HTTPS-capable client for proxying (supports both HTTP and HTTPS upstream)
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .expect("no native root CA certificates found")
+        .https_or_http()
+        .enable_http1()
+        .build();
+    let http_client = Arc::new(Client::builder(TokioExecutor::new()).build(https));
 
     // Load TLS configuration (shared across all listeners)
     let cert_path = std::env::var("CERT_PATH").unwrap_or_else(|_| DEFAULT_CERT_PATH.to_string());

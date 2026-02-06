@@ -1,17 +1,16 @@
 services:
   # HTTPS Reverse Proxy
   proxy:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "440:440"
       - "441:441"
+      - "442:442"
+      - "443:443"
     volumes:
       - ./routes.yaml:/etc/proxy/routes.yaml:ro
-    environment:
-      - RUST_LOG=https_proxy=info,tower_http=debug
-      - CONFIG_PATH=/etc/proxy/routes.yaml
-      - CERT_PATH=/certs/cert.pem
-      - KEY_PATH=/certs/key.pem
     depends_on:
       - app
       - api
@@ -27,6 +26,11 @@ services:
   app:
     image: containous/whoami
     command: ["--port", "3001"]
+    networks:
+      - proxy-net
+
+  ws-echo:
+    image: jmalloc/echo-server
     networks:
       - proxy-net
 

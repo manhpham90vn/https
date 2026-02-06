@@ -2,28 +2,15 @@
 
 A lightweight HTTPS reverse proxy written in Rust, designed for local development with Docker Compose.
 
-## Docker Hub
-
-```yaml
-# docker-compose.yml
-services:
-  proxy:
-    image: manhpv151090/https:latest
-    ports:
-      - "440:440"
-      - "441:441"
-    volumes:
-      - ./routes.yaml:/etc/proxy/routes.yaml:ro
-```
-
 ## Features
 
 - ✅ **Port-based routing** - Each port maps to a different backend service
-- ✅ HTTPS with auto-generated self-signed certificates (rustls)
-- ✅ Streaming body (no buffering)
-- ✅ X-Forwarded-\* headers injection
-- ✅ WebSocket proxying support
-- ✅ Alpine-based Docker image (~15MB)
+- ✅ **HTTPS Upstream** - Supports proxying to HTTPS targets (e.g., external APIs)
+- ✅ **WebSocket Support** - Full bidirectional WebSocket tunneling (wss:// -> ws://)
+- ✅ **Auto TLS** - Auto-generated self-signed certificates (rustls)
+- ✅ **Zero Config** - Works out-of-the-box with Docker Compose
+- ✅ **Streaming** - Non-buffering body forwarding
+- ✅ **Tiny** - Alpine-based Docker image (~25MB)
 
 ## Quick Start
 
@@ -35,19 +22,27 @@ Edit `routes.yaml`:
 listeners:
   - port: 440
     target: http://api:3000
-
   - port: 441
     target: http://app:3001
+  - port: 442
+    target: https://httpbin.org
+  - port: 443
+    target: http://ws-echo:8080
 ```
 
 ### 2. Update docker-compose.yml
 
 ```yaml
-proxy:
-  build: .
-  ports:
-    - "440:440"
-    - "441:441"
+services:
+  proxy:
+    image: manhpv151090/https:latest
+    ports:
+      - "440:440"
+      - "441:441"
+      - "442:442"
+      - "443:443"
+    volumes:
+      - ./routes.yaml:/etc/proxy/routes.yaml:ro
 ```
 
 ### 3. Run with Docker Compose
@@ -56,16 +51,26 @@ proxy:
 docker compose up --build
 ```
 
-> **Note:** SSL certificates are automatically generated during Docker build.
-
 ### 4. Test
+
+**HTTPS Request:**
 
 ```bash
 # Port 440 -> api service
 curl -k https://localhost:440/
 
-# Port 441 -> app service
-curl -k https://localhost:441/
+# Port 442 -> external HTTPS
+curl -k https://localhost:442/
+```
+
+**WebSocket:**
+
+```bash
+# Install Node.js & wscat
+npm install -g wscat
+
+# Connect
+wscat -n -c wss://localhost:443/ws
 ```
 
 ## Configuration
@@ -84,7 +89,7 @@ https/
 ├── src/
 │   ├── main.rs      # Entry point, multi-port TLS setup
 │   ├── config.rs    # YAML config loader
-│   └── proxy.rs     # Request forwarding logic
+│   └── proxy.rs     # Request forwarding logic (HTTP + WebSocket)
 ├── routes.yaml      # Listener configuration
 ├── Dockerfile       # Multi-stage Alpine build
 └── docker-compose.yml
