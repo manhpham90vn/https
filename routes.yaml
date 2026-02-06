@@ -1,0 +1,5 @@
+listeners:
+  - port: 440
+    target: http://api:3000
+  - port: 441
+    target: http://app:3001

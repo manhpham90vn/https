@@ -1,0 +1,52 @@
+[package]
+name = "https-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "A simple HTTPS reverse proxy for local development"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server
+axum = { version = "0.7", features = ["ws"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+
+# HTTP client for proxying
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+
+# TLS
+rustls = "0.22"
+rustls-pemfile = "2"
+tokio-rustls = "0.25"
+
+# Config parsing
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Bytes (required for Buf trait)
+bytes = "1"
+
+# Utilities
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[dev-dependencies]
+tempfile = "3.24.0"
+reqwest = { version = "0.12", features = ["json"] }
+wiremock = "0.6"
+tokio-test = "0.4"

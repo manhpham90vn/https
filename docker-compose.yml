@@ -1,0 +1,35 @@
+services:
+  # HTTPS Reverse Proxy
+  proxy:
+    build: .
+    ports:
+      - "440:440"
+      - "441:441"
+    volumes:
+      - ./routes.yaml:/etc/proxy/routes.yaml:ro
+    environment:
+      - RUST_LOG=https_proxy=info,tower_http=debug
+      - CONFIG_PATH=/etc/proxy/routes.yaml
+      - CERT_PATH=/certs/cert.pem
+      - KEY_PATH=/certs/key.pem
+    depends_on:
+      - app
+      - api
+    networks:
+      - proxy-net
+
+  api:
+    image: containous/whoami
+    command: ["--port", "3000"]
+    networks:
+      - proxy-net
+
+  app:
+    image: containous/whoami
+    command: ["--port", "3001"]
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    driver: bridge
