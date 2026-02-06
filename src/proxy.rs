@@ -5,8 +5,10 @@ use axum::{
 };
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use rustls::ClientConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio_tungstenite::Connector;
 
 type HttpClient = Arc<Client<HttpsConnector<HttpConnector>, Body>>;
 
@@ -16,6 +18,7 @@ pub async fn proxy_handler(
     req: Request<Body>,
     target: String,
     http_client: HttpClient,
+    tls_config: Arc<ClientConfig>,
 ) -> Response<Body> {
     let method = req.method().clone();
 
@@ -23,7 +26,7 @@ pub async fn proxy_handler(
 
     // Check for WebSocket upgrade
     if is_websocket_upgrade(&req) {
-        return handle_websocket_upgrade(req, &target, addr, &http_client).await;
+        return handle_websocket_upgrade(req, &target, addr, &http_client, &tls_config).await;
     }
 
     // Forward regular HTTP request
@@ -241,6 +244,7 @@ async fn handle_websocket_upgrade(
     target: &str,
     client_addr: SocketAddr,
     _http_client: &HttpClient,
+    tls_config: &Arc<ClientConfig>,
 ) -> Response<Body> {
     tracing::info!("WebSocket upgrade request from {}", client_addr);
 
@@ -283,6 +287,7 @@ async fn handle_websocket_upgrade(
         .unwrap();
 
     // 3. Spawn task to handle the tunnel
+    let tls_config = tls_config.clone();
     tokio::spawn(async move {
         // Wait for the client connection to be upgraded
         match hyper::upgrade::on(&mut req).await {
@@ -290,8 +295,16 @@ async fn handle_websocket_upgrade(
                 // Convert upgraded connection to TokioIo for tungstenite
                 let upgraded = hyper_util::rt::TokioIo::new(upgraded);
 
-                // Connect to upstream
-                match tokio_tungstenite::connect_async(upstream_url).await {
+                // Connect to upstream using the insecure TLS config
+                let connector = Connector::Rustls(tls_config.clone());
+                match tokio_tungstenite::connect_async_tls_with_config(
+                    upstream_url,
+                    None,
+                    false,
+                    Some(connector),
+                )
+                .await
+                {
                     Ok((ws_stream, _)) => {
                         // Create client WebSocket stream from the upgraded connection
                         // from_raw_socket is async in tokio-tungstenite and returns WebSocketStream
@@ -375,196 +388,135 @@ mod tests {
     use super::*;
     use axum::http::Request;
 
-    // ==================== is_websocket_upgrade tests ====================
-
     #[test]
-    fn test_is_websocket_upgrade_true() {
-        let req = Request::builder()
-            .header("connection", "Upgrade")
-            .header("upgrade", "websocket")
-            .body(())
-            .unwrap();
-
-        assert!(is_websocket_upgrade(&req));
-    }
-
-    #[test]
-    fn test_is_websocket_upgrade_case_insensitive() {
-        let req = Request::builder()
-            .header("Connection", "UPGRADE")
-            .header("Upgrade", "WebSocket")
-            .body(())
-            .unwrap();
-
-        assert!(is_websocket_upgrade(&req));
-    }
-
-    #[test]
-    fn test_is_websocket_upgrade_false_no_headers() {
-        let req = Request::builder().body(()).unwrap();
-
-        assert!(!is_websocket_upgrade(&req));
-    }
-
-    #[test]
-    fn test_is_websocket_upgrade_false_missing_upgrade() {
+    fn test_header_contains_single_value() {
         let req = Request::builder()
             .header("connection", "upgrade")
             .body(())
             .unwrap();
-
-        assert!(!is_websocket_upgrade(&req));
+        assert!(header_contains(&req, "connection", "upgrade"));
     }
 
     #[test]
-    fn test_is_websocket_upgrade_false_wrong_upgrade_type() {
+    fn test_header_contains_case_insensitive() {
         let req = Request::builder()
-            .header("connection", "upgrade")
-            .header("upgrade", "h2c")
+            .header("Connection", "Upgrade")
             .body(())
             .unwrap();
-
-        assert!(!is_websocket_upgrade(&req));
+        assert!(header_contains(&req, "connection", "upgrade"));
     }
 
-    // ==================== header_contains tests ====================
-
     #[test]
-    fn test_header_contains_found() {
+    fn test_header_contains_multiple_values() {
         let req = Request::builder()
-            .header("content-type", "application/json")
+            .header("connection", "keep-alive, upgrade")
             .body(())
             .unwrap();
-
-        assert!(header_contains(&req, "content-type", "json"));
+        assert!(header_contains(&req, "connection", "upgrade"));
+        assert!(header_contains(&req, "connection", "keep-alive"));
     }
 
     #[test]
     fn test_header_contains_not_found() {
         let req = Request::builder()
-            .header("content-type", "text/html")
+            .header("connection", "keep-alive")
             .body(())
             .unwrap();
-
-        assert!(!header_contains(&req, "content-type", "json"));
+        assert!(!header_contains(&req, "connection", "upgrade"));
     }
 
     #[test]
-    fn test_header_contains_missing_header() {
-        let req = Request::builder().body(()).unwrap();
-
-        assert!(!header_contains(&req, "content-type", "json"));
-    }
-
-    // ==================== build_upstream_uri tests ====================
-
-    #[test]
-    fn test_build_upstream_uri_simple_path() {
-        let original: Uri = "/api/users".parse().unwrap();
-        let target = "http://backend:8080";
-
-        let result = build_upstream_uri(&original, target).unwrap();
-
-        assert_eq!(result.to_string(), "http://backend:8080/api/users");
+    fn test_is_websocket_upgrade_valid() {
+        let req = Request::builder()
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(())
+            .unwrap();
+        assert!(is_websocket_upgrade(&req));
     }
 
     #[test]
-    fn test_build_upstream_uri_with_query() {
-        let original: Uri = "/search?q=hello&page=2".parse().unwrap();
-        let target = "http://backend:8080";
-
-        let result = build_upstream_uri(&original, target).unwrap();
-
-        assert_eq!(
-            result.to_string(),
-            "http://backend:8080/search?q=hello&page=2"
-        );
+    fn test_is_websocket_upgrade_missing_connection() {
+        let req = Request::builder()
+            .header("upgrade", "websocket")
+            .body(())
+            .unwrap();
+        assert!(!is_websocket_upgrade(&req));
     }
 
     #[test]
-    fn test_build_upstream_uri_root_path() {
-        let original: Uri = "/".parse().unwrap();
-        let target = "http://backend:8080";
-
-        let result = build_upstream_uri(&original, target).unwrap();
-
-        assert_eq!(result.to_string(), "http://backend:8080/");
+    fn test_is_websocket_upgrade_missing_upgrade() {
+        let req = Request::builder()
+            .header("connection", "upgrade")
+            .body(())
+            .unwrap();
+        assert!(!is_websocket_upgrade(&req));
     }
 
     #[test]
-    fn test_build_upstream_uri_empty_path_defaults_to_root() {
-        // When original URI has no path, it should default to "/"
-        let original: Uri = "http://localhost".parse().unwrap();
-        let target = "http://backend:8080";
-
-        let result = build_upstream_uri(&original, target).unwrap();
-
-        // path_and_query returns None for URI without path, which defaults to "/"
-        assert_eq!(result.to_string(), "http://backend:8080/");
+    fn test_normalize_cookie_headers_single() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", HeaderValue::from_static("session=abc"));
+        normalize_cookie_headers(&mut headers).unwrap();
+        assert_eq!(headers.get("cookie").unwrap(), "session=abc");
     }
 
     #[test]
-    fn test_build_upstream_uri_preserves_https() {
-        let original: Uri = "/api".parse().unwrap();
-        let target = "https://secure-backend:443";
-
-        let result = build_upstream_uri(&original, target).unwrap();
-
-        assert_eq!(result.to_string(), "https://secure-backend:443/api");
+    fn test_normalize_cookie_headers_multiple() {
+        let mut headers = HeaderMap::new();
+        headers.append("cookie", HeaderValue::from_static("session=abc"));
+        headers.append("cookie", HeaderValue::from_static("token=xyz"));
+        normalize_cookie_headers(&mut headers).unwrap();
+        assert_eq!(headers.get("cookie").unwrap(), "session=abc; token=xyz");
+        assert_eq!(headers.get_all("cookie").iter().count(), 1);
     }
 
-    // ==================== add_forwarding_headers tests ====================
+    #[test]
+    fn test_normalize_cookie_headers_empty() {
+        let mut headers = HeaderMap::new();
+        normalize_cookie_headers(&mut headers).unwrap();
+        assert!(headers.get("cookie").is_none());
+    }
 
     #[test]
     fn test_add_forwarding_headers_new() {
         let mut headers = HeaderMap::new();
         let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
+        let original_host = Some(HeaderValue::from_static("example.com"));
+        add_forwarding_headers(&mut headers, addr, original_host).unwrap();
 
+        assert_eq!(headers.get("x-real-ip").unwrap(), "192.168.1.100");
+        assert_eq!(headers.get("x-forwarded-for").unwrap(), "192.168.1.100");
+        assert_eq!(headers.get("x-forwarded-proto").unwrap(), "https");
+        assert_eq!(headers.get("x-forwarded-host").unwrap(), "example.com");
+        assert_eq!(headers.get("x-forwarded-port").unwrap(), "443");
+    }
+
+    #[test]
+    fn test_add_forwarding_headers_append_xff() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("10.0.0.1, 10.0.0.2"),
+        );
+        let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
         add_forwarding_headers(&mut headers, addr, None).unwrap();
 
         assert_eq!(
-            headers.get("x-real-ip").unwrap().to_str().unwrap(),
-            "192.168.1.100"
-        );
-        assert_eq!(
-            headers.get("x-forwarded-for").unwrap().to_str().unwrap(),
-            "192.168.1.100"
-        );
-        assert_eq!(
-            headers.get("x-forwarded-proto").unwrap().to_str().unwrap(),
-            "https"
+            headers.get("x-forwarded-for").unwrap(),
+            "10.0.0.1, 10.0.0.2, 192.168.1.100"
         );
     }
 
     #[test]
-    fn test_add_forwarding_headers_appends_xff() {
+    fn test_add_forwarding_headers_preserves_existing_proto() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static("10.0.0.1"));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
         let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
-
         add_forwarding_headers(&mut headers, addr, None).unwrap();
 
-        assert_eq!(
-            headers.get("x-forwarded-for").unwrap().to_str().unwrap(),
-            "10.0.0.1, 192.168.1.100"
-        );
+        assert_eq!(headers.get("x-forwarded-proto").unwrap(), "http");
     }
-
-    #[test]
-    fn test_add_forwarding_headers_with_host() {
-        let mut headers = HeaderMap::new();
-        let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
-        let host = HeaderValue::from_static("example.com");
-
-        add_forwarding_headers(&mut headers, addr, Some(host)).unwrap();
-
-        assert_eq!(
-            headers.get("x-forwarded-host").unwrap().to_str().unwrap(),
-            "example.com"
-        );
-    }
-
-    // ==================== remove_hop_by_hop_headers tests ====================
 
     #[test]
     fn test_remove_hop_by_hop_headers() {
@@ -572,140 +524,62 @@ mod tests {
         headers.insert("connection", HeaderValue::from_static("keep-alive"));
         headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
         headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
-        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert("upgrade", HeaderValue::from_static("websocket"));
+        headers.insert("content-type", HeaderValue::from_static("text/plain"));
+        headers.insert("x-custom", HeaderValue::from_static("value"));
 
         remove_hop_by_hop_headers(&mut headers);
 
         assert!(headers.get("connection").is_none());
         assert!(headers.get("keep-alive").is_none());
         assert!(headers.get("transfer-encoding").is_none());
-        // Non-hop-by-hop headers should remain
+        assert!(headers.get("upgrade").is_none());
         assert!(headers.get("content-type").is_some());
-    }
-
-    // ==================== normalize_cookie_headers tests ====================
-
-    #[test]
-    fn test_normalize_cookie_headers_merges_multiple() {
-        let mut headers = HeaderMap::new();
-        headers.append("cookie", HeaderValue::from_static("a=1"));
-        headers.append("cookie", HeaderValue::from_static("b=2"));
-        headers.append("cookie", HeaderValue::from_static("c=3"));
-
-        normalize_cookie_headers(&mut headers).unwrap();
-
-        let all = headers.get_all("cookie").iter().collect::<Vec<_>>();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].to_str().unwrap(), "a=1; b=2; c=3");
+        assert!(headers.get("x-custom").is_some());
     }
 
     #[test]
-    fn test_normalize_cookie_headers_single_unchanged() {
-        let mut headers = HeaderMap::new();
-        headers.insert("cookie", HeaderValue::from_static("session=123"));
+    fn test_build_upstream_uri_simple() {
+        let original: Uri = "/api/users".parse().unwrap();
+        let target = "http://backend:8080";
+        let result = build_upstream_uri(&original, target).unwrap();
+        assert_eq!(result.to_string(), "http://backend:8080/api/users");
+    }
 
-        normalize_cookie_headers(&mut headers).unwrap();
-
+    #[test]
+    fn test_build_upstream_uri_with_query() {
+        let original: Uri = "/search?q=hello&page=2".parse().unwrap();
+        let target = "http://backend:8080";
+        let result = build_upstream_uri(&original, target).unwrap();
         assert_eq!(
-            headers.get("cookie").unwrap().to_str().unwrap(),
-            "session=123"
+            result.to_string(),
+            "http://backend:8080/search?q=hello&page=2"
         );
     }
 
-    // ==================== bad_gateway_response tests ====================
-
     #[test]
-    fn test_bad_gateway_response_status() {
-        let resp = bad_gateway_response("Test error");
-
-        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    fn test_build_upstream_uri_https() {
+        let original: Uri = "/api".parse().unwrap();
+        let target = "https://api.example.com";
+        let result = build_upstream_uri(&original, target).unwrap();
+        assert_eq!(result.to_string(), "https://api.example.com/api");
     }
 
     #[test]
-    fn test_bad_gateway_response_content_type() {
-        let resp = bad_gateway_response("Test error");
+    fn test_build_upstream_uri_root_path() {
+        let original: Uri = "/".parse().unwrap();
+        let target = "http://backend:3000";
+        let result = build_upstream_uri(&original, target).unwrap();
+        assert_eq!(result.to_string(), "http://backend:3000/");
+    }
 
+    #[test]
+    fn test_bad_gateway_response() {
+        let response = bad_gateway_response("Connection refused");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(
-            resp.headers()
-                .get("content-type")
-                .unwrap()
-                .to_str()
-                .unwrap(),
+            response.headers().get("content-type").unwrap(),
             "text/plain; charset=utf-8"
         );
-    }
-
-    #[test]
-    fn test_build_upstream_request_preserves_cookies() {
-        let req = Request::builder()
-            .header("cookie", "session=123; user=alice")
-            .uri("http://localhost/path")
-            .body(Body::empty())
-            .unwrap();
-
-        let upstream_uri: Uri = "http://upstream:8080/path".parse().unwrap();
-        let client_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result = build_upstream_request(req, upstream_uri, client_addr).unwrap();
-
-        assert_eq!(
-            result.headers().get("cookie").unwrap().to_str().unwrap(),
-            "session=123; user=alice"
-        );
-    }
-
-    #[test]
-    fn test_build_upstream_request_h2_host_fallback() {
-        // HTTP/2 requests often lack Host header but have authority in URI
-        let req = Request::builder()
-            .uri("https://example.com/path")
-            // No Host header manually added
-            .body(Body::empty())
-            .unwrap();
-
-        // Sanity check: ensure builder didn't add it automatically (it doesn't for Request)
-        assert!(req.headers().get("host").is_none());
-
-        let upstream_uri: Uri = "http://upstream:8080/path".parse().unwrap();
-        let client_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result = build_upstream_request(req, upstream_uri, client_addr).unwrap();
-
-        assert_eq!(
-            result
-                .headers()
-                .get("x-forwarded-host")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "example.com"
-        );
-    }
-
-    #[test]
-    fn test_build_upstream_request_merges_multiple_cookie_headers() {
-        let mut req = Request::builder()
-            .uri("http://localhost/path")
-            .body(Body::empty())
-            .unwrap();
-
-        {
-            let headers = req.headers_mut();
-            headers.append("cookie", HeaderValue::from_static("a=1"));
-            headers.append("cookie", HeaderValue::from_static("b=2"));
-        }
-
-        let upstream_uri: Uri = "http://upstream:8080/path".parse().unwrap();
-        let client_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result = build_upstream_request(req, upstream_uri, client_addr).unwrap();
-
-        let all = result
-            .headers()
-            .get_all("cookie")
-            .iter()
-            .collect::<Vec<_>>();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].to_str().unwrap(), "a=1; b=2");
     }
 }

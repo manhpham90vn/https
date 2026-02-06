@@ -21,6 +21,7 @@ use wiremock::{
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
+use rustls::ClientConfig;
 
 // Imports for WebSocket testing
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -31,7 +32,10 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
 
 /// Helper to create HTTPS-capable client for tests
-fn create_test_client() -> Arc<Client<HttpsConnector<HttpConnector>, Body>> {
+fn create_test_client() -> (
+    Arc<Client<HttpsConnector<HttpConnector>, Body>>,
+    Arc<ClientConfig>,
+) {
     // Install default crypto provider (required for rustls 0.23+)
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
@@ -44,7 +48,67 @@ fn create_test_client() -> Arc<Client<HttpsConnector<HttpConnector>, Body>> {
         .https_or_http()
         .enable_http1()
         .build();
-    Arc::new(Client::builder(TokioExecutor::new()).build(https))
+
+    // Create TLS config for WebSocket connections (allow insecure for testing)
+    let tls_config = ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
+        .with_no_client_auth();
+
+    (
+        Arc::new(Client::builder(TokioExecutor::new()).build(https)),
+        Arc::new(tls_config),
+    )
+}
+
+/// Insecure certificate verifier for testing purposes
+#[derive(Debug)]
+struct InsecureCertVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for InsecureCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+        ]
+    }
 }
 
 #[tokio::test]
@@ -59,7 +123,7 @@ async fn test_proxy_forwards_request_to_upstream() {
         .await;
 
     let target = mock_server.uri();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     // Create request
     let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
@@ -69,7 +133,8 @@ async fn test_proxy_forwards_request_to_upstream() {
         .unwrap();
 
     // Call proxy handler
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -85,7 +150,7 @@ async fn test_proxy_preserves_query_string() {
         .await;
 
     let target = mock_server.uri();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
     let req = Request::builder()
@@ -93,7 +158,8 @@ async fn test_proxy_preserves_query_string() {
         .body(Body::empty())
         .unwrap();
 
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -113,12 +179,13 @@ async fn test_proxy_adds_x_forwarded_headers() {
         .await;
 
     let target = mock_server.uri();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     let addr: SocketAddr = "10.0.0.50:12345".parse().unwrap();
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -136,7 +203,7 @@ async fn test_proxy_appends_to_existing_x_forwarded_for() {
         .await;
 
     let target = mock_server.uri();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
     let req = Request::builder()
@@ -145,7 +212,8 @@ async fn test_proxy_appends_to_existing_x_forwarded_for() {
         .body(Body::empty())
         .unwrap();
 
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -154,12 +222,13 @@ async fn test_proxy_appends_to_existing_x_forwarded_for() {
 async fn test_proxy_returns_502_on_upstream_failure() {
     // Target a non-existent server
     let target = "http://127.0.0.1:59999".to_string();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
@@ -175,7 +244,7 @@ async fn test_proxy_forwards_post_request_body() {
         .await;
 
     let target = mock_server.uri();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
     let req = Request::builder()
@@ -185,7 +254,8 @@ async fn test_proxy_forwards_post_request_body() {
         .body(Body::from(r#"{"name": "test"}"#))
         .unwrap();
 
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
 }
@@ -205,12 +275,13 @@ async fn test_proxy_preserves_response_headers() {
         .await;
 
     let target = mock_server.uri();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -244,7 +315,7 @@ async fn test_proxy_handles_404_from_upstream() {
         .await;
 
     let target = mock_server.uri();
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
     let req = Request::builder()
@@ -252,7 +323,8 @@ async fn test_proxy_handles_404_from_upstream() {
         .body(Body::empty())
         .unwrap();
 
-    let response = https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client).await;
+    let response =
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
 
     // Proxy should pass through the 404 status
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -290,7 +362,7 @@ async fn test_proxy_forwards_websocket() {
 
     let backend_addr = rx.await.unwrap();
     let target = format!("http://{}", backend_addr);
-    let http_client = create_test_client();
+    let (http_client, tls_config) = create_test_client();
 
     // 2. Start the proxy server itself (since we need a real HTTP server to handle Upgrade headers properly)
     // We can't just call proxy_handler directly easily because the Upgrade requires taking over the transport,
@@ -299,6 +371,7 @@ async fn test_proxy_forwards_websocket() {
 
     let proxy_target = target.clone();
     let proxy_client = http_client.clone();
+    let proxy_tls_config = tls_config.clone();
 
     tokio::spawn(async move {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -308,7 +381,10 @@ async fn test_proxy_forwards_websocket() {
         let app = Router::new().fallback(any(move |connect_info: ConnectInfo<SocketAddr>, req| {
             let target = proxy_target.clone();
             let http_client = proxy_client.clone();
-            async move { https_proxy::proxy_handler(connect_info, req, target, http_client).await }
+            let tls_config = proxy_tls_config.clone();
+            async move {
+                https_proxy::proxy_handler(connect_info, req, target, http_client, tls_config).await
+            }
         }));
 
         axum::serve(

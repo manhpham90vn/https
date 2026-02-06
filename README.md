@@ -1,8 +1,8 @@
-# HTTPS Reverse Proxy
+# HTTPS Reverse Proxy - [Docker Hub](https://hub.docker.com/r/manhpv151090/https)
 
 ![Docker Image Size (tag)](https://img.shields.io/docker/image-size/manhpv151090/https/latest)
 ![Docker Pulls](https://img.shields.io/docker/pulls/manhpv151090/https)
-![License](https://img.shields.io/github/license/manhpv151090/https)
+![License](https://img.shields.io/github/license/manhpham90vn/https)
 
 A lightweight, high-performance HTTPS reverse proxy written in Rust. Designed for local development with Docker Compose to easily route traffic to multiple backend services with automatic self-signed TLS certificates.
 
@@ -17,6 +17,8 @@ A lightweight, high-performance HTTPS reverse proxy written in Rust. Designed fo
   - [Routes Configuration](#routes-configuration)
   - [Environment Variables](#environment-variables)
 - [Development](#development)
+  - [Project Structure](#project-structure)
+  - [Running Tests](#running-tests)
 - [Custom Certificates](#custom-certificates)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -29,7 +31,7 @@ A lightweight, high-performance HTTPS reverse proxy written in Rust. Designed fo
 - ✅ **Auto TLS**: Automatically generates self-signed certificates using `rustls` on startup.
 - ✅ **Zero Config**: Works out-of-the-box with Docker Compose.
 - ✅ **Streaming**: Non-buffering body forwarding for high performance.
-- ✅ **Tiny Footprint**: Alpine-based Docker image (~25MB).
+- ✅ **Tiny Footprint**: Alpine-based Docker image (~7MB).
 
 ## 🛠 Prerequisites
 
@@ -113,6 +115,23 @@ listeners:
 | `RUST_LOG`    | `https_proxy=info`       | Logging level (supported: `error`, `warn`, `info`, `debug`, `trace`). |
 
 ## 💻 Development
+
+### Project Structure
+
+```
+.
+├── src/
+│   ├── main.rs       # Entry point, server setup
+│   ├── lib.rs        # Library exports
+│   ├── config.rs     # YAML config loading
+│   ├── proxy.rs      # Core proxy logic, WebSocket handling
+│   └── tls.rs        # TLS configuration
+├── tests/
+│   └── integration_test.rs  # Integration tests
+├── routes.yaml       # Example routes config
+├── Dockerfile        # Multi-stage Docker build
+└── docker-compose.yml
+```
 
 ### Running Locally (Rust)
 
