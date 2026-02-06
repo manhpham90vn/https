@@ -3,11 +3,12 @@ use axum::{
     extract::ConnectInfo,
     http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri, Version},
 };
-use hyper_util::client::legacy::Client;
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-type HttpClient = Arc<Client<hyper_util::client::legacy::connect::HttpConnector, Body>>;
+type HttpClient = Arc<Client<HttpsConnector<HttpConnector>, Body>>;
 
 /// Main proxy handler - forwards requests to the configured target
 pub async fn proxy_handler(
@@ -177,50 +178,127 @@ fn build_upstream_request(
 
 /// Handle WebSocket upgrade request
 async fn handle_websocket_upgrade(
-    req: Request<Body>,
+    mut req: Request<Body>,
     target: &str,
     client_addr: SocketAddr,
-    http_client: &HttpClient,
+    _http_client: &HttpClient,
 ) -> Response<Body> {
     tracing::info!("WebSocket upgrade request from {}", client_addr);
 
-    // Build upstream URI
-    let upstream_uri = match build_upstream_uri(req.uri(), target) {
+    // 1. Build upstream WebSocket URL (ws:// or wss://)
+    let target_uri: Uri = match target.parse() {
         Ok(uri) => uri,
-        Err(e) => {
-            tracing::error!("Failed to build upstream URI for WebSocket: {}", e);
-            return bad_gateway_response(&format!("Invalid WebSocket upstream URI: {}", e));
-        }
+        Err(e) => return bad_gateway_response(&format!("Invalid target URI: {}", e)),
     };
 
-    // For WebSocket proxying, we need to keep connection and upgrade headers
-    let (mut parts, body) = req.into_parts();
+    let scheme = match target_uri.scheme_str() {
+        Some("https") => "wss",
+        _ => "ws",
+    };
 
-    // Save original host
-    let original_host = parts.headers.get("host").cloned();
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    let authority = target_uri.authority().map(|a| a.as_str()).unwrap_or("");
 
-    parts.uri = upstream_uri;
+    let upstream_url = format!("{}://{}{}", scheme, authority, path_and_query);
 
-    // Add X-Forwarded headers (but don't remove hop-by-hop for WebSocket)
-    if let Err(e) = add_forwarding_headers(&mut parts.headers, client_addr, original_host) {
-        tracing::error!("Failed to add forwarding headers: {}", e);
-        return bad_gateway_response(&format!("Header error: {}", e));
-    }
+    // 2. Prepare upgrade response for the client
+    let upgrade_header = match req.headers().get("sec-websocket-key") {
+        Some(h) => h,
+        None => return bad_gateway_response("Missing Sec-WebSocket-Key"),
+    };
 
-    let upstream_req = Request::from_parts(parts, body);
+    // Calculate accept key
+    let accept_key =
+        tokio_tungstenite::tungstenite::handshake::derive_accept_key(upgrade_header.as_bytes());
 
-    // Send upgrade request to upstream
-    match http_client.request(upstream_req).await {
-        Ok(resp) => {
-            let (parts, body) = resp.into_parts();
-            let body = Body::new(body);
-            Response::from_parts(parts, body)
+    let response = Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Accept", accept_key)
+        .body(Body::empty())
+        .unwrap();
+
+    // 3. Spawn task to handle the tunnel
+    tokio::spawn(async move {
+        // Wait for the client connection to be upgraded
+        match hyper::upgrade::on(&mut req).await {
+            Ok(upgraded) => {
+                // Convert upgraded connection to TokioIo for tungstenite
+                let upgraded = hyper_util::rt::TokioIo::new(upgraded);
+
+                // Connect to upstream
+                match tokio_tungstenite::connect_async(upstream_url).await {
+                    Ok((ws_stream, _)) => {
+                        // Create client WebSocket stream from the upgraded connection
+                        // from_raw_socket is async in tokio-tungstenite and returns WebSocketStream
+                        let client_ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                            upgraded,
+                            tokio_tungstenite::tungstenite::protocol::Role::Server,
+                            None,
+                        )
+                        .await;
+
+                        use futures_util::{SinkExt, StreamExt};
+
+                        let (mut client_write, mut client_read) = client_ws_stream.split();
+                        let (mut upstream_write, mut upstream_read) = ws_stream.split();
+
+                        // Forward messages: client -> upstream
+                        let client_to_upstream = async {
+                            while let Some(msg) = client_read.next().await {
+                                match msg {
+                                    Ok(msg) => {
+                                        if let Err(e) = upstream_write.send(msg).await {
+                                            tracing::error!("Failed to send to upstream: {}", e);
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Client WS error: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        };
+
+                        // Forward messages: upstream -> client
+                        let upstream_to_client = async {
+                            while let Some(msg) = upstream_read.next().await {
+                                match msg {
+                                    Ok(msg) => {
+                                        if let Err(e) = client_write.send(msg).await {
+                                            tracing::error!("Failed to send to client: {}", e);
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Upstream WS error: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        };
+
+                        tokio::select! {
+                            _ = client_to_upstream => {},
+                            _ = upstream_to_client => {},
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to connect to upstream WebSocket: {}", e);
+                    }
+                }
+            }
+            Err(e) => tracing::error!("Upgrade error: {}", e),
         }
-        Err(e) => {
-            tracing::error!("WebSocket upstream request failed: {}", e);
-            bad_gateway_response(&format!("WebSocket upstream failed: {}", e))
-        }
-    }
+    });
+
+    response
 }
 
 /// 502 Bad Gateway response with detailed message
