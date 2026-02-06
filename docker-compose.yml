@@ -11,6 +11,8 @@ services:
       - "443:443"
     volumes:
       - ./routes.yaml:/etc/proxy/routes.yaml:ro
+    environment:
+      - RUST_LOG=debug
     depends_on:
       - app
       - api

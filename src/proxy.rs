@@ -33,15 +33,41 @@ pub async fn proxy_handler(
 /// Helper function to check if a header contains a specific value (case-insensitive)
 fn header_contains<B>(req: &Request<B>, name: &str, value: &str) -> bool {
     req.headers()
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_lowercase().contains(value))
-        .unwrap_or(false)
+        .get_all(name)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.to_lowercase().contains(value))
 }
 
 /// Check if request is a WebSocket upgrade
 fn is_websocket_upgrade<B>(req: &Request<B>) -> bool {
     header_contains(req, "connection", "upgrade") && header_contains(req, "upgrade", "websocket")
+}
+
+/// Normalize Cookie headers:
+/// - Browsers over HTTP/2 can send multiple `cookie` headers.
+/// - Some upstream stacks (PHP/FPM, certain servers) may parse only the last one or parse wrongly.
+/// - Fix: merge into a single Cookie header joined by "; ".
+fn normalize_cookie_headers(headers: &mut HeaderMap) -> anyhow::Result<()> {
+    let cookies: Vec<&str> = headers
+        .get_all("cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if cookies.len() <= 1 {
+        return Ok(());
+    }
+
+    // Cookie must be merged with "; " (NOT ",")
+    let merged = cookies.join("; ");
+
+    headers.remove("cookie");
+    headers.insert("cookie", HeaderValue::from_str(&merged)?);
+
+    Ok(())
 }
 
 /// Add X-Forwarded-* and X-Real-IP headers to the request
@@ -60,18 +86,32 @@ fn add_forwarding_headers(
     let xff = match headers.get("x-forwarded-for") {
         Some(existing) => {
             let existing_str = existing.to_str().unwrap_or("");
-            format!("{}, {}", existing_str, client_addr.ip())
+            if existing_str.trim().is_empty() {
+                client_addr.ip().to_string()
+            } else {
+                format!("{}, {}", existing_str, client_addr.ip())
+            }
         }
         None => client_addr.ip().to_string(),
     };
     headers.insert("x-forwarded-for", HeaderValue::from_str(&xff)?);
 
     // X-Forwarded-Proto
-    headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    // Only set if not already present (e.g. when behind another LB/proxy).
+    if !headers.contains_key("x-forwarded-proto") {
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    }
 
     // X-Forwarded-Host (from original Host header)
     if let Some(host) = original_host {
-        headers.insert("x-forwarded-host", host);
+        if !headers.contains_key("x-forwarded-host") {
+            headers.insert("x-forwarded-host", host);
+        }
+    }
+
+    // X-Forwarded-Port
+    if !headers.contains_key("x-forwarded-port") {
+        headers.insert("x-forwarded-port", HeaderValue::from_static("443"));
     }
 
     Ok(())
@@ -113,6 +153,17 @@ async fn forward_request(
             return bad_gateway_response(&format!("Failed to build request: {}", e));
         }
     };
+
+    // Log upstream headers if debug is enabled
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        tracing::debug!("Upstream request headers:");
+        for (name, value) in upstream_req.headers().iter() {
+            tracing::debug!("  {}: {:?}", name, value);
+        }
+
+        let cookie_count = upstream_req.headers().get_all("cookie").iter().count();
+        tracing::debug!("cookie header count = {}", cookie_count);
+    }
 
     // Send request to upstream
     match http_client.request(upstream_req).await {
@@ -159,12 +210,17 @@ fn build_upstream_request(
     let (mut parts, body) = req.into_parts();
 
     // Save original host before modifying headers
-    let original_host = parts.headers.get("host").cloned();
+    let original_host = parts.headers.get("host").cloned().or_else(|| {
+        parts
+            .uri
+            .authority()
+            .and_then(|auth| HeaderValue::from_str(auth.as_str()).ok())
+    });
 
     // Update URI
     parts.uri = upstream_uri;
 
-    // Force HTTP/1.1 for upstream requests
+    // Force HTTP/1.1 for upstream requests (optional, but ok)
     parts.version = Version::HTTP_11;
 
     // Add forwarding headers
@@ -172,6 +228,9 @@ fn build_upstream_request(
 
     // Remove hop-by-hop headers
     remove_hop_by_hop_headers(&mut parts.headers);
+
+    // ✅ IMPORTANT: normalize Cookie headers for upstream compatibility
+    normalize_cookie_headers(&mut parts.headers)?;
 
     Ok(Request::from_parts(parts, body))
 }
@@ -524,6 +583,35 @@ mod tests {
         assert!(headers.get("content-type").is_some());
     }
 
+    // ==================== normalize_cookie_headers tests ====================
+
+    #[test]
+    fn test_normalize_cookie_headers_merges_multiple() {
+        let mut headers = HeaderMap::new();
+        headers.append("cookie", HeaderValue::from_static("a=1"));
+        headers.append("cookie", HeaderValue::from_static("b=2"));
+        headers.append("cookie", HeaderValue::from_static("c=3"));
+
+        normalize_cookie_headers(&mut headers).unwrap();
+
+        let all = headers.get_all("cookie").iter().collect::<Vec<_>>();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].to_str().unwrap(), "a=1; b=2; c=3");
+    }
+
+    #[test]
+    fn test_normalize_cookie_headers_single_unchanged() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", HeaderValue::from_static("session=123"));
+
+        normalize_cookie_headers(&mut headers).unwrap();
+
+        assert_eq!(
+            headers.get("cookie").unwrap().to_str().unwrap(),
+            "session=123"
+        );
+    }
+
     // ==================== bad_gateway_response tests ====================
 
     #[test]
@@ -545,5 +633,79 @@ mod tests {
                 .unwrap(),
             "text/plain; charset=utf-8"
         );
+    }
+
+    #[test]
+    fn test_build_upstream_request_preserves_cookies() {
+        let req = Request::builder()
+            .header("cookie", "session=123; user=alice")
+            .uri("http://localhost/path")
+            .body(Body::empty())
+            .unwrap();
+
+        let upstream_uri: Uri = "http://upstream:8080/path".parse().unwrap();
+        let client_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result = build_upstream_request(req, upstream_uri, client_addr).unwrap();
+
+        assert_eq!(
+            result.headers().get("cookie").unwrap().to_str().unwrap(),
+            "session=123; user=alice"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_request_h2_host_fallback() {
+        // HTTP/2 requests often lack Host header but have authority in URI
+        let req = Request::builder()
+            .uri("https://example.com/path")
+            // No Host header manually added
+            .body(Body::empty())
+            .unwrap();
+
+        // Sanity check: ensure builder didn't add it automatically (it doesn't for Request)
+        assert!(req.headers().get("host").is_none());
+
+        let upstream_uri: Uri = "http://upstream:8080/path".parse().unwrap();
+        let client_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result = build_upstream_request(req, upstream_uri, client_addr).unwrap();
+
+        assert_eq!(
+            result
+                .headers()
+                .get("x-forwarded-host")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_request_merges_multiple_cookie_headers() {
+        let mut req = Request::builder()
+            .uri("http://localhost/path")
+            .body(Body::empty())
+            .unwrap();
+
+        {
+            let headers = req.headers_mut();
+            headers.append("cookie", HeaderValue::from_static("a=1"));
+            headers.append("cookie", HeaderValue::from_static("b=2"));
+        }
+
+        let upstream_uri: Uri = "http://upstream:8080/path".parse().unwrap();
+        let client_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result = build_upstream_request(req, upstream_uri, client_addr).unwrap();
+
+        let all = result
+            .headers()
+            .get_all("cookie")
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].to_str().unwrap(), "a=1; b=2");
     }
 }
