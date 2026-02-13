@@ -18,8 +18,14 @@ A lightweight, high-performance HTTPS reverse proxy written in Rust. Designed fo
   - [Environment Variables](#environment-variables)
 - [Development](#development)
   - [Project Structure](#project-structure)
+  - [Running Locally](#running-locally-rust)
+  - [Building Docker Image](#building-docker-image)
   - [Running Tests](#running-tests)
-- [Custom Certificates](#custom-certificates)
+- [Certificates](#certificates)
+  - [Auto-Generated CA Certificate](#auto-generated-ca-certificate)
+  - [Trusting the CA Certificate](#trusting-the-ca-certificate)
+  - [Uninstall CA](#uninstall-ca)
+  - [Manual Import](#manual-import-alternative)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -28,7 +34,7 @@ A lightweight, high-performance HTTPS reverse proxy written in Rust. Designed fo
 - ✅ **Port-based Routing**: Map specific ports to different backend services easily.
 - ✅ **HTTPS Upstream**: Supports proxying to external HTTPS targets (e.g., public APIs).
 - ✅ **WebSocket Support**: Full bidirectional WebSocket tunneling (`wss://` -> `ws://`).
-- ✅ **Auto TLS**: Automatically generates self-signed certificates using `rustls` on startup.
+- ✅ **Auto TLS**: Automatically generates self-signed CA and server certificates on startup.
 - ✅ **Zero Config**: Works out-of-the-box with Docker Compose.
 - ✅ **Streaming**: Non-buffering body forwarding for high performance.
 - ✅ **Tiny Footprint**: Alpine-based Docker image (~7MB).
@@ -118,23 +124,26 @@ listeners:
 
 ```
 .
-├── proxy/                # HTTPS reverse proxy crate
+├── proxy/                    # HTTPS reverse proxy crate
 │   ├── src/
-│   │   ├── main.rs       # Entry point, server setup
-│   │   ├── lib.rs        # Library exports
-│   │   ├── config.rs     # YAML config loading
-│   │   ├── proxy.rs      # Core proxy logic, WebSocket handling
-│   │   └── tls.rs        # TLS configuration
+│   │   ├── main.rs           # Entry point, server setup
+│   │   ├── lib.rs            # Library exports
+│   │   ├── config.rs         # YAML config loading
+│   │   ├── proxy.rs          # Core proxy logic, WebSocket handling
+│   │   └── tls.rs            # TLS configuration
 │   ├── tests/
 │   │   └── integration_test.rs
-│   └── routes.yaml       # Example routes config
-├── manage-ca/            # CA certificate management CLI
-│   └── src/
-│       ├── main.rs       # CLI entry point
-│       └── nss.rs        # NSS FFI for browser cert management
-├── Cargo.toml            # Workspace manifest
-├── Dockerfile            # Multi-stage Docker build
-└── docker-compose.yml
+│   ├── entrypoint.sh         # Docker entrypoint (CA + cert generation)
+│   └── Cargo.toml
+├── manage-ca/                # CA certificate management CLI
+│   ├── src/
+│   │   └── main.rs           # CLI entry point + NSS/browser cert management
+│   └── Cargo.toml
+├── Cargo.toml                # Workspace manifest
+├── Dockerfile                # Multi-stage Docker build
+├── docker-compose.yml        # Example composition with demo services
+├── routes.yaml               # Example routes config
+└── LICENSE
 ```
 
 ### Running Locally (Rust)
@@ -156,6 +165,12 @@ To build the Docker image locally:
 
 ```bash
 docker build -t my-https-proxy .
+```
+
+### Running Tests
+
+```bash
+cargo test --all-features
 ```
 
 ## 🔐 Certificates
@@ -240,14 +255,14 @@ sudo ./manage-ca install --cert /path/to/ca.crt
 
 After installation, restart your browsers.
 
-## 🗑 Uninstall CA
+### Uninstall CA
 
 ```bash
 sudo ./manage-ca uninstall          # Linux/macOS
 .\manage-ca.exe uninstall           # Windows (as Admin)
 ```
 
-## 📋 Manual Import (alternative)
+### Manual Import (alternative)
 
 If you prefer not to use `manage-ca`, you can import the certificate manually.
 
