@@ -251,6 +251,20 @@ sudo ./manage-ca uninstall          # Linux/macOS
 
 If you prefer not to use `manage-ca`, you can import the certificate manually.
 
+**Linux (Ubuntu/Debian):**
+
+```bash
+sudo cp certs/ca/ca.crt /usr/local/share/ca-certificates/local-dev-ca.crt
+sudo update-ca-certificates
+```
+
+**Linux (Fedora/RHEL/Arch):**
+
+```bash
+sudo cp certs/ca/ca.crt /etc/pki/ca-trust/source/anchors/local-dev-ca.crt
+sudo update-ca-trust extract
+```
+
 **Chrome/Chromium/Edge:**
 
 1. Go to `chrome://certificate-manager`
