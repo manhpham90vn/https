@@ -112,10 +112,7 @@ echo "CA Certificate: /certs/ca/ca.crt"
 echo "Server Certificate: /certs/cert.pem"
 echo "Server Key: /certs/key.pem"
 echo ""
-echo "To trust this CA on your host machine, run:"
-echo "  Linux:   ./install-ca.sh"
-echo "  macOS:   ./install-ca.sh"
-echo "  Windows: ./install-ca.ps1"
+echo "  See README.md for download and manual import options."
 echo ""
 
 # Switch to proxy user and execute the application
