@@ -325,7 +325,10 @@ fn find_nss_databases() -> Result<Vec<PathBuf>> {
             .filter_map(|e| e.ok())
         {
             if entry.file_name() == "nssdb"
-                && entry.path().parent().map_or(false, |p| p.ends_with(".pki"))
+                && entry
+                    .path()
+                    .parent()
+                    .is_some_and(|p| p.file_name().is_some_and(|name| name == ".pki"))
             {
                 dbs.push(entry.path().to_path_buf());
             }
