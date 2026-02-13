@@ -430,7 +430,7 @@ fn configure_firefox(cert_path: &Path, name: &str) -> Result<()> {
 fn configure_firefox_dir(firefox_dir: &Path, cert_path: &Path, name: &str) -> Result<()> {
     println!("   Scanning Firefox profiles in {:?}", firefox_dir);
 
-    for entry in std::fs::read_dir(&firefox_dir)? {
+    for entry in std::fs::read_dir(firefox_dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
