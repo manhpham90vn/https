@@ -71,6 +71,7 @@ services:
       - "443:443"
     volumes:
       - ./routes.yaml:/etc/proxy/routes.yaml:ro
+      - ./certs:/certs
 ```
 
 ### 3. Run the Proxy
@@ -107,12 +108,9 @@ listeners:
 
 ### Environment Variables
 
-| Variable      | Default                  | Description                                                           |
-| ------------- | ------------------------ | --------------------------------------------------------------------- |
-| `CONFIG_PATH` | `/etc/proxy/routes.yaml` | Path to the routes configuration file inside the container.           |
-| `CERT_PATH`   | `/certs/cert.pem`        | Path to the SSL certificate file.                                     |
-| `KEY_PATH`    | `/certs/key.pem`         | Path to the SSL private key file.                                     |
-| `RUST_LOG`    | `https_proxy=info`       | Logging level (supported: `error`, `warn`, `info`, `debug`, `trace`). |
+| Variable   | Default            | Description                                                           |
+| ---------- | ------------------ | --------------------------------------------------------------------- |
+| `RUST_LOG` | `https_proxy=info` | Logging level (supported: `error`, `warn`, `info`, `debug`, `trace`). |
 
 ## 💻 Development
 
@@ -120,16 +118,22 @@ listeners:
 
 ```
 .
-├── src/
-│   ├── main.rs       # Entry point, server setup
-│   ├── lib.rs        # Library exports
-│   ├── config.rs     # YAML config loading
-│   ├── proxy.rs      # Core proxy logic, WebSocket handling
-│   └── tls.rs        # TLS configuration
-├── tests/
-│   └── integration_test.rs  # Integration tests
-├── routes.yaml       # Example routes config
-├── Dockerfile        # Multi-stage Docker build
+├── proxy/                # HTTPS reverse proxy crate
+│   ├── src/
+│   │   ├── main.rs       # Entry point, server setup
+│   │   ├── lib.rs        # Library exports
+│   │   ├── config.rs     # YAML config loading
+│   │   ├── proxy.rs      # Core proxy logic, WebSocket handling
+│   │   └── tls.rs        # TLS configuration
+│   ├── tests/
+│   │   └── integration_test.rs
+│   └── routes.yaml       # Example routes config
+├── manage-ca/            # CA certificate management CLI
+│   └── src/
+│       ├── main.rs       # CLI entry point
+│       └── nss.rs        # NSS FFI for browser cert management
+├── Cargo.toml            # Workspace manifest
+├── Dockerfile            # Multi-stage Docker build
 └── docker-compose.yml
 ```
 
@@ -154,26 +158,124 @@ To build the Docker image locally:
 docker build -t my-https-proxy .
 ```
 
-## 🔐 Custom Certificates
+## 🔐 Certificates
 
-By default, the container generates self-signed certificates on startup. To use your own trusted certificates (e.g., generated with `mkcert`):
+### Auto-Generated CA Certificate
 
-1.  **Generate Certificates** (using `mkcert`):
+By default, the container automatically generates a Certificate Authority (CA) and server certificates on startup. The CA certificate is stored in the `certs/ca/` directory.
 
-    ```bash
-    mkcert -install
-    mkdir -p certs
-    mkcert -key-file certs/key.pem -cert-file certs/cert.pem localhost 127.0.0.1
-    ```
+**Important**: Make sure to mount the `certs` directory in your `docker-compose.yml`:
 
-2.  **Mount in Docker**:
-    Update your `docker-compose.yml`:
-    ```yaml
-    volumes:
-      - ./routes.yaml:/etc/proxy/routes.yaml:ro
-      - ./certs:/certs:ro # Mount your custom certs directory
-    ```
-    _Note: The container checks for `/certs/cert.pem` and `/certs/key.pem` on startup._
+```yaml
+volumes:
+  - ./routes.yaml:/etc/proxy/routes.yaml:ro
+  - ./certs:/certs
+```
+
+### Trusting the CA Certificate
+
+To avoid browser security warnings, use the `manage-ca` CLI tool to install the CA certificate.
+
+**Prerequisites:**
+
+| OS      | Required Software                            |
+| ------- | -------------------------------------------- |
+| Linux   | `libnss3-tools` (for Chrome/Chromium NSS DB) |
+| macOS   | None (uses built-in `security` command)      |
+| Windows | None (uses built-in `certutil.exe`)          |
+
+```bash
+# Ubuntu/Debian
+sudo apt install libnss3-tools
+
+# Fedora/RHEL
+sudo dnf install nss-tools
+
+# Arch
+sudo pacman -S nss
+```
+
+**Option 1: Download from GitHub Releases**
+
+Linux:
+
+```bash
+curl -L -o manage-ca https://github.com/manhpham90vn/https/releases/latest/download/manage-ca-linux-amd64
+chmod +x manage-ca
+sudo ./manage-ca install
+```
+
+macOS:
+
+```bash
+# Intel
+curl -L -o manage-ca https://github.com/manhpham90vn/https/releases/latest/download/manage-ca-macos-amd64
+# Apple Silicon
+curl -L -o manage-ca https://github.com/manhpham90vn/https/releases/latest/download/manage-ca-macos-arm64
+
+chmod +x manage-ca
+sudo ./manage-ca install
+```
+
+Windows (PowerShell as Administrator):
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/manhpham90vn/https/releases/latest/download/manage-ca-windows-amd64.exe" -OutFile manage-ca.exe
+.\manage-ca.exe install
+```
+
+**Option 2: Build from source**
+
+```bash
+cargo build --release -p manage-ca
+sudo ./target/release/manage-ca install     # Linux/macOS
+.\target\release\manage-ca.exe install      # Windows (as Admin)
+```
+
+**Custom cert path:**
+
+```bash
+sudo ./manage-ca install --cert /path/to/ca.crt
+```
+
+After installation, restart your browsers.
+
+## 🗑 Uninstall CA
+
+```bash
+sudo ./manage-ca uninstall          # Linux/macOS
+.\manage-ca.exe uninstall           # Windows (as Admin)
+```
+
+## 📋 Manual Import (alternative)
+
+If you prefer not to use `manage-ca`, you can import the certificate manually.
+
+**Chrome/Chromium/Edge:**
+
+1. Go to `chrome://settings/certificates`
+2. Click **Authorities** tab → **Import**
+3. Select `certs/ca/ca.crt`
+4. Check ✓ "Trust this certificate for identifying websites"
+
+**Firefox:**
+
+1. Go to `about:preferences#privacy`
+2. Scroll to **Certificates** → **View Certificates** → **Authorities** → **Import**
+3. Select `certs/ca/ca.crt`
+4. Check ✓ "Trust this CA to identify websites"
+
+**macOS (manual):**
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain certs/ca/ca.crt
+```
+
+**Windows (manual):**
+
+```powershell
+certutil -addstore Root certs\ca\ca.crt
+```
 
 ## ❓ Troubleshooting
 

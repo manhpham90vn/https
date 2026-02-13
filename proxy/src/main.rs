@@ -11,9 +11,9 @@ use hyper_util::rt::TokioExecutor;
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-const DEFAULT_CERT_PATH: &str = "/certs/cert.pem";
-const DEFAULT_KEY_PATH: &str = "/certs/key.pem";
-const DEFAULT_CONFIG_PATH: &str = "/etc/proxy/routes.yaml";
+const CERT_PATH: &str = "/certs/cert.pem";
+const KEY_PATH: &str = "/certs/key.pem";
+const CONFIG_PATH: &str = "/etc/proxy/routes.yaml";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,10 +31,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // Load configuration
-    let config_path =
-        std::env::var("CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
-    tracing::info!("Loading config from: {}", config_path);
-    let config = Config::load(&config_path)?;
+    tracing::info!("Loading config from: {}", CONFIG_PATH);
+    let config = Config::load(CONFIG_PATH)?;
     tracing::info!("Loaded {} listeners", config.listeners.len());
     for listener in &config.listeners {
         tracing::info!("  :{} -> {}", listener.port, listener.target);
@@ -54,13 +52,10 @@ async fn main() -> anyhow::Result<()> {
     let http_client = Arc::new(Client::builder(TokioExecutor::new()).build(https));
 
     // Load TLS configuration (shared across all listeners)
-    let cert_path = std::env::var("CERT_PATH").unwrap_or_else(|_| DEFAULT_CERT_PATH.to_string());
-    let key_path = std::env::var("KEY_PATH").unwrap_or_else(|_| DEFAULT_KEY_PATH.to_string());
+    tracing::info!("Loading TLS cert from: {}", CERT_PATH);
+    tracing::info!("Loading TLS key from: {}", KEY_PATH);
 
-    tracing::info!("Loading TLS cert from: {}", cert_path);
-    tracing::info!("Loading TLS key from: {}", key_path);
-
-    let rustls_config = RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
+    let rustls_config = RustlsConfig::from_pem_file(CERT_PATH, KEY_PATH).await?;
 
     // Spawn a task for each listener
     let mut handles = Vec::new();
@@ -85,8 +80,15 @@ async fn main() -> anyhow::Result<()> {
                     let http_client = http_client.clone();
                     let client_tls_config = client_tls_config.clone();
                     async move {
-                        proxy_handler(connect_info, req, target, http_client, client_tls_config)
-                            .await
+                        proxy_handler(
+                            connect_info,
+                            req,
+                            target,
+                            http_client,
+                            client_tls_config,
+                            port,
+                        )
+                        .await
                     }
                 }
             }));
@@ -104,9 +106,18 @@ async fn main() -> anyhow::Result<()> {
         handles.push(handle);
     }
 
-    // Wait for all listeners (they should run forever)
-    for handle in handles {
-        let _ = handle.await;
+    // Wait for shutdown signal or listener failure
+    tokio::select! {
+        _ = async {
+            for handle in handles {
+                let _ = handle.await;
+            }
+        } => {
+            tracing::warn!("All listeners stopped unexpectedly");
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received shutdown signal, stopping...");
+        }
     }
 
     Ok(())
