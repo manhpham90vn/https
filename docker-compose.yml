@@ -1,9 +1,7 @@
 services:
   # HTTPS Reverse Proxy
   proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     ports:
       - "440:440"
       - "441:441"
@@ -11,6 +9,7 @@ services:
       - "443:443"
     volumes:
       - ./routes.yaml:/etc/proxy/routes.yaml:ro
+      - ./certs:/certs  # Mount certs directory to access CA certificate on host
     environment:
       - RUST_LOG=debug
     depends_on:

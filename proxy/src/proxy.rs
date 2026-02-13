@@ -19,6 +19,7 @@ pub async fn proxy_handler(
     target: String,
     http_client: HttpClient,
     tls_config: Arc<ClientConfig>,
+    port: u16,
 ) -> Response<Body> {
     let method = req.method().clone();
 
@@ -30,7 +31,7 @@ pub async fn proxy_handler(
     }
 
     // Forward regular HTTP request
-    forward_request(req, &target, addr, &http_client).await
+    forward_request(req, &target, addr, &http_client, port).await
 }
 
 /// Helper function to check if a header contains a specific value (case-insensitive)
@@ -78,6 +79,7 @@ fn add_forwarding_headers(
     headers: &mut HeaderMap,
     client_addr: SocketAddr,
     original_host: Option<HeaderValue>,
+    port: u16,
 ) -> anyhow::Result<()> {
     // X-Real-IP - the actual client IP
     headers.insert(
@@ -114,7 +116,10 @@ fn add_forwarding_headers(
 
     // X-Forwarded-Port
     if !headers.contains_key("x-forwarded-port") {
-        headers.insert("x-forwarded-port", HeaderValue::from_static("443"));
+        headers.insert(
+            "x-forwarded-port",
+            HeaderValue::from_str(&port.to_string())?,
+        );
     }
 
     Ok(())
@@ -138,6 +143,7 @@ async fn forward_request(
     target: &str,
     client_addr: SocketAddr,
     http_client: &HttpClient,
+    port: u16,
 ) -> Response<Body> {
     // Build upstream URI - preserve full path and query string
     let upstream_uri = match build_upstream_uri(req.uri(), target) {
@@ -149,7 +155,7 @@ async fn forward_request(
     };
 
     // Build new request with forwarding headers
-    let upstream_req = match build_upstream_request(req, upstream_uri, client_addr) {
+    let upstream_req = match build_upstream_request(req, upstream_uri, client_addr, port) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to build upstream request: {}", e);
@@ -209,6 +215,7 @@ fn build_upstream_request(
     req: Request<Body>,
     upstream_uri: Uri,
     client_addr: SocketAddr,
+    port: u16,
 ) -> anyhow::Result<Request<Body>> {
     let (mut parts, body) = req.into_parts();
 
@@ -227,7 +234,7 @@ fn build_upstream_request(
     parts.version = Version::HTTP_11;
 
     // Add forwarding headers
-    add_forwarding_headers(&mut parts.headers, client_addr, original_host)?;
+    add_forwarding_headers(&mut parts.headers, client_addr, original_host, port)?;
 
     // Remove hop-by-hop headers
     remove_hop_by_hop_headers(&mut parts.headers);
@@ -483,7 +490,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
         let original_host = Some(HeaderValue::from_static("example.com"));
-        add_forwarding_headers(&mut headers, addr, original_host).unwrap();
+        add_forwarding_headers(&mut headers, addr, original_host, 443).unwrap();
 
         assert_eq!(headers.get("x-real-ip").unwrap(), "192.168.1.100");
         assert_eq!(headers.get("x-forwarded-for").unwrap(), "192.168.1.100");
@@ -500,7 +507,7 @@ mod tests {
             HeaderValue::from_static("10.0.0.1, 10.0.0.2"),
         );
         let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
-        add_forwarding_headers(&mut headers, addr, None).unwrap();
+        add_forwarding_headers(&mut headers, addr, None, 8443).unwrap();
 
         assert_eq!(
             headers.get("x-forwarded-for").unwrap(),
@@ -513,7 +520,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
         let addr: SocketAddr = "192.168.1.100:54321".parse().unwrap();
-        add_forwarding_headers(&mut headers, addr, None).unwrap();
+        add_forwarding_headers(&mut headers, addr, None, 443).unwrap();
 
         assert_eq!(headers.get("x-forwarded-proto").unwrap(), "http");
     }

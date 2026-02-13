@@ -134,7 +134,8 @@ async fn test_proxy_forwards_request_to_upstream() {
 
     // Call proxy handler
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -159,7 +160,8 @@ async fn test_proxy_preserves_query_string() {
         .unwrap();
 
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -185,7 +187,8 @@ async fn test_proxy_adds_x_forwarded_headers() {
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -213,7 +216,8 @@ async fn test_proxy_appends_to_existing_x_forwarded_for() {
         .unwrap();
 
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -228,7 +232,8 @@ async fn test_proxy_returns_502_on_upstream_failure() {
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
@@ -255,7 +260,8 @@ async fn test_proxy_forwards_post_request_body() {
         .unwrap();
 
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
 }
@@ -281,7 +287,8 @@ async fn test_proxy_preserves_response_headers() {
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -324,7 +331,8 @@ async fn test_proxy_handles_404_from_upstream() {
         .unwrap();
 
     let response =
-        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config).await;
+        https_proxy::proxy_handler(ConnectInfo(addr), req, target, http_client, tls_config, 443)
+            .await;
 
     // Proxy should pass through the 404 status
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -383,7 +391,8 @@ async fn test_proxy_forwards_websocket() {
             let http_client = proxy_client.clone();
             let tls_config = proxy_tls_config.clone();
             async move {
-                https_proxy::proxy_handler(connect_info, req, target, http_client, tls_config).await
+                https_proxy::proxy_handler(connect_info, req, target, http_client, tls_config, 443)
+                    .await
             }
         }));
 

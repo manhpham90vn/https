@@ -6,27 +6,32 @@ RUN apk add --no-cache musl-dev
 
 WORKDIR /app
 
-# Copy manifests
+# Copy workspace manifest
 COPY Cargo.toml Cargo.lock* ./
 
-# Create dummy src to cache dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
+# Copy crate manifests
+COPY proxy/Cargo.toml proxy/Cargo.toml
+COPY manage-ca/Cargo.toml manage-ca/Cargo.toml
 
-# Build dependencies
-RUN cargo build --release --locked
-RUN rm src/*.rs
+# Create dummy src to cache dependencies
+RUN mkdir -p proxy/src && echo "fn main() {}" > proxy/src/main.rs
+RUN mkdir -p manage-ca/src && echo "fn main() {}" > manage-ca/src/main.rs
+
+# Build dependencies (only proxy crate)
+RUN cargo build --release --locked -p https-proxy
+RUN rm proxy/src/*.rs
 
 # Copy actual source code
-COPY src ./src
+COPY proxy/src ./proxy/src
 
-RUN cargo build --release --locked
+RUN cargo build --release --locked -p https-proxy
 
 RUN strip target/release/https-proxy || true
 
 # Runtime stage - using Alpine for smaller image
 FROM alpine:3.23
 
-# Install CA certificates, openssl for generating self-signed certs, and su-exec to drop privileges
+# Install CA certificates, openssl for generating self-signed certs
 RUN apk add --no-cache ca-certificates openssl
 
 # Create non-root user
@@ -39,7 +44,7 @@ RUN mkdir -p /certs /etc/proxy
 COPY --from=builder /app/target/release/https-proxy /usr/local/bin/https-proxy
 
 # Copy entrypoint script
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY proxy/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Set ownership

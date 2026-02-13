@@ -1,3 +1,7 @@
 /target/
 *.pem
 certs/*.pem
+certs/**/*.crt
+certs/**/*.key
+certs/**/*.srl
+certs/*.ext
