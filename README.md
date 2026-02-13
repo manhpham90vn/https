@@ -253,10 +253,10 @@ If you prefer not to use `manage-ca`, you can import the certificate manually.
 
 **Chrome/Chromium/Edge:**
 
-1. Go to `chrome://settings/certificates`
-2. Click **Authorities** tab → **Import**
-3. Select `certs/ca/ca.crt`
-4. Check ✓ "Trust this certificate for identifying websites"
+1. Go to `chrome://certificate-manager`
+2. Under **Custom**, click **Installed by you**
+3. In **Trusted Certificates** section, click **Import**
+4. Select `certs/ca/ca.crt`
 
 **Firefox:**
 

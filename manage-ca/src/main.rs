@@ -276,7 +276,7 @@ fn uninstall_system_ca(_cert_path: &Path, name: &str) -> Result<()> {
 fn configure_browsers(cert_path: &Path, name: &str) -> Result<()> {
     println!("-> Configuring Browsers:");
 
-    configure_firefox()?;
+    configure_firefox(cert_path, name)?;
 
     #[cfg(target_os = "linux")]
     configure_nss_browsers(cert_path, name)?;
@@ -402,22 +402,32 @@ fn uninstall_nss_browsers(_cert_path: &Path, name: &str) -> Result<()> {
 // Firefox Configuration (all platforms)
 // =============================================================================
 
-fn configure_firefox() -> Result<()> {
+fn configure_firefox(cert_path: &Path, name: &str) -> Result<()> {
     let home_dir = get_real_home()?;
 
     #[cfg(target_os = "linux")]
-    let firefox_dir = home_dir.join(".mozilla/firefox");
+    let firefox_dirs = vec![
+        home_dir.join(".mozilla/firefox"),
+        home_dir.join("snap/firefox/common/.mozilla/firefox"),
+    ];
 
     #[cfg(target_os = "macos")]
-    let firefox_dir = home_dir.join("Library/Application Support/Firefox/Profiles");
+    let firefox_dirs = vec![home_dir.join("Library/Application Support/Firefox/Profiles")];
 
     #[cfg(target_os = "windows")]
-    let firefox_dir = home_dir.join("AppData/Roaming/Mozilla/Firefox/Profiles");
+    let firefox_dirs = vec![home_dir.join("AppData/Roaming/Mozilla/Firefox/Profiles")];
 
-    if !firefox_dir.exists() {
-        return Ok(());
+    for firefox_dir in &firefox_dirs {
+        if !firefox_dir.exists() {
+            continue;
+        }
+        configure_firefox_dir(firefox_dir, cert_path, name)?;
     }
 
+    Ok(())
+}
+
+fn configure_firefox_dir(firefox_dir: &Path, cert_path: &Path, name: &str) -> Result<()> {
     println!("   Scanning Firefox profiles in {:?}", firefox_dir);
 
     for entry in std::fs::read_dir(&firefox_dir)? {
@@ -428,6 +438,28 @@ fn configure_firefox() -> Result<()> {
             if prefs_path.exists() {
                 println!("   Configuring profile: {:?}", path.file_name().unwrap());
                 update_firefox_prefs(&prefs_path)?;
+
+                // Import cert directly into Firefox profile NSS DB
+                #[cfg(target_os = "linux")]
+                if which("certutil") {
+                    let db_arg = format!("sql:{}", path.display());
+                    // Remove old cert first
+                    let _ = Command::new("certutil")
+                        .args(["-D", "-d", &db_arg, "-n", name])
+                        .output();
+                    let status = Command::new("certutil")
+                        .args(["-A", "-d", &db_arg, "-t", "C,,", "-n", name, "-i"])
+                        .arg(cert_path)
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            println!("     ✓ Cert imported into Firefox profile");
+                        }
+                        _ => {
+                            eprintln!("     x Failed to import cert into Firefox profile");
+                        }
+                    }
+                }
             }
         }
     }
