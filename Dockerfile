@@ -44,7 +44,7 @@ RUN mkdir -p /certs /etc/proxy
 COPY --from=builder /app/target/release/https-proxy /usr/local/bin/https-proxy
 
 # Copy entrypoint script
-COPY proxy/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Set ownership

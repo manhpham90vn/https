@@ -70,6 +70,7 @@ Add the proxy service to your composition:
 services:
   proxy:
     image: manhpv151090/https:latest
+    platform: linux/amd64
     ports:
       - "440:440"
       - "441:441"
@@ -133,7 +134,6 @@ listeners:
 │   │   └── tls.rs            # TLS configuration
 │   ├── tests/
 │   │   └── integration_test.rs
-│   ├── entrypoint.sh         # Docker entrypoint (CA + cert generation)
 │   └── Cargo.toml
 ├── manage-ca/                # CA certificate management CLI
 │   ├── src/
@@ -141,6 +141,7 @@ listeners:
 │   └── Cargo.toml
 ├── Cargo.toml                # Workspace manifest
 ├── Dockerfile                # Multi-stage Docker build
+├── entrypoint.sh             # Docker entrypoint (CA + cert generation)
 ├── docker-compose.yml        # Example composition with demo services
 ├── routes.yaml               # Example routes config
 └── LICENSE

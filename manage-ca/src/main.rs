@@ -75,6 +75,7 @@ fn uninstall_ca(cert_path: &Path, name: &str) -> Result<()> {
 // System Store: Linux
 // =============================================================================
 
+#[cfg(target_os = "linux")]
 enum LinuxCaMethod {
     /// Debian/Ubuntu: update-ca-certificates
     Debian,
@@ -99,6 +100,7 @@ fn detect_ca_method() -> Result<LinuxCaMethod> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
     Command::new("which")
         .arg(cmd)
@@ -427,7 +429,7 @@ fn configure_firefox(cert_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn configure_firefox_dir(firefox_dir: &Path, cert_path: &Path, name: &str) -> Result<()> {
+fn configure_firefox_dir(firefox_dir: &Path, _cert_path: &Path, _name: &str) -> Result<()> {
     println!("   Scanning Firefox profiles in {:?}", firefox_dir);
 
     for entry in std::fs::read_dir(firefox_dir)? {
