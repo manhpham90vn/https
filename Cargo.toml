@@ -4,3 +4,9 @@ members = [
     "proxy",
     "manage-ca"
 ]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

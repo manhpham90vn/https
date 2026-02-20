@@ -44,12 +44,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1"
 anyhow = "1"
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-
 [dev-dependencies]
 tempfile = "3.24.0"
 reqwest = { version = "0.12", features = ["json"] }
